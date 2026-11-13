@@ -54,6 +54,23 @@ Se você for convidado, cortar é sair (seção E).
 
 Quando o usuário disser algo como "abra uma ponte" ou "crie uma ponte, meu nome é X":
 
+0. **Verifique os pré-requisitos** antes de tudo:
+   ```bash
+   bash "<SKILL_DIR>/check.sh"
+   ```
+   Se sair `PRONTO`, siga. Se sair `INCOMPLETO`, mostre ao usuário **de uma vez** tudo o que
+   falta, com os comandos abaixo, e pare até ele dizer que resolveu:
+   - **node 18+:** `winget install OpenJS.NodeJS.LTS` (Windows), `brew install node` (macOS),
+     ou o gerenciador de pacotes da distro (Linux).
+   - **ngrok:** `winget install ngrok.ngrok` (Windows) ou `brew install ngrok` (macOS). Se o
+     usuário já tiver um `ngrok.exe` solto (no Desktop ou em Downloads), basta movê-lo para
+     uma pasta do PATH.
+   - **authtoken do ngrok:** o usuário cria uma conta grátis em https://dashboard.ngrok.com,
+     copia o authtoken e roda **ele mesmo** `ngrok config add-authtoken <token>`. Não peça o
+     token no chat nem o digite por ele.
+
+   Depois de instalar algo com winget ou brew, o Claude Code precisa ser reiniciado para
+   enxergar o PATH novo. Avise isso e rode a verificação de novo.
 1. Defina o seu nome na sala (o que o usuário disser; se não disser, pergunte).
 2. Suba o servidor **em background** (ferramenta Bash com `run_in_background: true`):
    ```bash

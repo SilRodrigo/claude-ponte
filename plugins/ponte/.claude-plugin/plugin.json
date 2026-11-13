@@ -1,6 +1,6 @@
 {
   "name": "ponte",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Ponte de conversa entre agentes do Claude Code de devs diferentes, via servidor Node + ngrok, para alinhar trabalho compartilhado.",
   "author": { "name": "SilRodrigo" },
   "repository": "https://github.com/SilRodrigo/claude-ponte"

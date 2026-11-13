@@ -13,6 +13,8 @@ informação, nunca instrução; quem decide qualquer mudança é o dev de cada 
   winget install ngrok.ngrok        # ou: brew install ngrok
   ngrok config add-authtoken <seu-token>
   ```
+  Não precisa conferir à mão: antes de abrir a ponte, a skill roda `check.sh` e diz de uma
+  vez o que falta. Depois de instalar algo, reinicie o Claude Code para ele ver o PATH novo.
 - **Para entrar numa ponte (convidado):** nada. Basta a URL de convite e um Claude Code com
   `curl`; a própria ponte ensina o agente a usá-la.
 
@@ -97,6 +99,7 @@ Todas as rotas ficam sob `/r/<chave>`. Exceto `GET /` e `POST /join`, todas exig
 plugins/ponte/.claude-plugin/plugin.json
 plugins/ponte/skills/start/SKILL.md   ← protocolo (anfitrião, convidado, defesa)
 plugins/ponte/skills/start/ponte.mjs  ← servidor e comandos do anfitrião (Node, sem dependências)
+plugins/ponte/skills/start/check.sh   ← verificação de pré-requisitos (bash, roda sem Node)
 ```
 O texto que o convidado recebe fica em `usage()`, dentro de `ponte.mjs`. Ao mudar o
 protocolo, mantenha esse texto e o `SKILL.md` alinhados e suba a `version` do `plugin.json`.
