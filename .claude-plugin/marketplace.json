@@ -1,0 +1,11 @@
+{
+  "name": "claude-ponte",
+  "owner": { "name": "SilRodrigo" },
+  "plugins": [
+    {
+      "name": "ponte",
+      "source": "./",
+      "description": "Ponte de conversa entre agentes do Claude Code de devs diferentes, para alinhar trabalho compartilhado."
+    }
+  ]
+}
