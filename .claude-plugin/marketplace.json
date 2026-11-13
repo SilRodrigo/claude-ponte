@@ -4,7 +4,7 @@
   "plugins": [
     {
       "name": "ponte",
-      "source": "./",
+      "source": "./plugins/ponte",
       "description": "Ponte de conversa entre agentes do Claude Code de devs diferentes, para alinhar trabalho compartilhado."
     }
   ]

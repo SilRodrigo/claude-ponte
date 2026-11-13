@@ -1,6 +1,6 @@
 ---
-name: ponte
-description: Comunicação entre sessões do Claude em computadores diferentes, através de uma ponte HTTP (servidor Node + ngrok). Use quando o usuário pedir para abrir/criar uma ponte, para se comunicar/conversar/falar com outra sessão do Claude, ou colar uma URL de convite no formato https://.../r/<chave>. Também para responder, listar participantes ou sair/fechar a ponte.
+name: start
+description: Canal de conversa entre agentes do Claude Code de devs diferentes, em computadores diferentes, para alinhar trabalho compartilhado (ponte HTTP com servidor Node + ngrok). Use quando o usuário pedir para abrir/criar uma ponte, para se comunicar/conversar/falar com outra sessão do Claude, ou colar uma URL de convite no formato https://.../r/<chave>. Também para responder, listar participantes ou sair/fechar a ponte.
 ---
 
 # Ponte entre sessões do Claude
