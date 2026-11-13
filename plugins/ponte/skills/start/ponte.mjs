@@ -11,7 +11,8 @@
 //   - Ao entrar, cada participante recebe um token próprio (192 bits). Todas as outras rotas
 //     exigem "Authorization: Bearer <token>". O remetente de cada mensagem vem do token,
 //     então ninguém consegue se passar por outro participante.
-//   - Nomes são únicos por sala: uma vez usado, um nome não pode ser tomado por outro.
+//   - Cada participante recebe um ID (ex.: p-7f3k). O nome é só um rótulo e pode repetir.
+//   - Expulsar invalida o token e tranca a sala, para quem saiu não voltar com outro nome.
 //   - Limites: participantes, tamanho de mensagem, fila e taxa de envio.
 //   - A ponte se encerra sozinha após um período sem mensagens (padrão 120 min).
 
@@ -44,7 +45,7 @@ else {
   console.log(`ponte.mjs: ponte de mensagens entre sessões do Claude
   node ponte.mjs serve  --name <nome> [--port 7777] [--no-ngrok] [--url https://dominio] [--idle 120]
   node ponte.mjs info   [--port 7777]
-  node ponte.mjs kick   <nome> [--port 7777]   -> expulsa e impede o nome de voltar
+  node ponte.mjs kick   <id>   [--port 7777]   -> expulsa (invalida o token) e tranca a sala
   node ponte.mjs lock   [--port 7777]          -> tranca: ninguém novo entra
   node ponte.mjs unlock [--port 7777]
   node ponte.mjs stop   [--port 7777]          -> fecha a ponte`);
@@ -53,7 +54,7 @@ else {
 async function hostCommand(c) {
   const s = readState();
   if (!s?.host) { console.error(`Nenhuma ponte ativa com anfitrião na porta ${PORT}.`); process.exit(1); }
-  const q = c === 'kick' ? `?name=${encodeURIComponent(args._[1] || '')}` : '';
+  const q = c === 'kick' ? `?id=${encodeURIComponent(args._[1] || '')}` : '';
   try {
     const r = await fetch(`${s.local}/${c}${q}`, { method: 'POST', headers: { authorization: `Bearer ${s.host.token}` } });
     console.log(await r.text());
@@ -105,11 +106,12 @@ function serve() {
   const localRoom = `http://127.0.0.1:${PORT}${basePath}`;
   const idleMin = args.idle === undefined ? 120 : Number(args.idle);
 
-  const people = new Map();   // nome em minúsculas -> participante
+  // Cada participante é identificado por um ID gerado aqui (ex.: p-7f3k). O nome é só um
+  // rótulo para leitura: pode repetir e nunca é usado para autorizar nada.
+  const people = new Map();   // id -> participante
   const byToken = new Map();  // hash do token -> participante
   let seq = 0;
   let locked = false;          // sala trancada: ninguém novo entra
-  const banned = new Set();    // nomes expulsos (minúsculas)
   let lastMessageAt = Date.now();
   let publicRoom = null;
   let ngrokProc = null;
@@ -122,16 +124,40 @@ function serve() {
     return x.length === y.length && crypto.timingSafeEqual(x, y);
   }
 
+  const ID_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789'; // sem caracteres ambíguos (0/o, 1/l/i)
+  function newId() {
+    for (;;) {
+      const b = crypto.randomBytes(4);
+      const id = 'p-' + [...b].map((x) => ID_ALPHABET[x % ID_ALPHABET.length]).join('');
+      if (!people.has(id)) return id;
+    }
+  }
+
+  const label = (p) => `${p.name} (${p.id})`;
+  const ref = (p) => ({ id: p.id, name: p.name });
+
+  // Encontra um participante pelo ID ou, por conveniência, pelo nome se só uma pessoa o usa.
+  function resolve(key) {
+    key = String(key || '').trim();
+    if (people.has(key)) return { p: people.get(key) };
+    const matches = [...people.values()].filter((p) => p.name.toLowerCase() === key.toLowerCase());
+    if (matches.length === 1) return { p: matches[0] };
+    if (matches.length > 1) {
+      return { error: 409, body: { error: `mais de um participante se chama "${key}"; use o ID`, candidates: matches.map(ref) } };
+    }
+    return { error: 404, body: { error: `ninguém com ID ou nome "${key}" na sala`, participants: [...people.values()].map(ref) } };
+  }
+
   function addPerson(name, isHost = false) {
     const token = crypto.randomBytes(24).toString('base64url');
-    const p = { name, host: isHost, tokenHash: sha(token), queue: [], waiter: null, lastSeen: Date.now(), sends: [] };
-    people.set(name.toLowerCase(), p);
+    const p = { id: newId(), name, host: isHost, tokenHash: sha(token), queue: [], waiter: null, lastSeen: Date.now(), sends: [] };
+    people.set(p.id, p);
     byToken.set(p.tokenHash, p);
     return { p, token };
   }
 
   function removePerson(p) {
-    people.delete(p.name.toLowerCase());
+    people.delete(p.id);
     byToken.delete(p.tokenHash);
     if (p.waiter) endWaiter(p, []);
   }
@@ -143,7 +169,7 @@ function serve() {
   }
 
   function system(text, except) {
-    const msg = { id: ++seq, from: 'ponte', to: '*', at: new Date().toISOString(), text };
+    const msg = { id: ++seq, from: { id: 'ponte', name: 'ponte' }, to: '*', at: new Date().toISOString(), text };
     for (const p of people.values()) if (p !== except) deliver(p, msg);
   }
 
@@ -196,14 +222,16 @@ function serve() {
   function participants() {
     const now = Date.now();
     return [...people.values()].map((p) => ({
+      id: p.id,
       name: p.name,
+      host: p.host,
       listening: !!p.waiter,
       lastSeenSecAgo: Math.round((now - p.lastSeen) / 1000),
     }));
   }
 
   function usage(room) {
-    const names = [...people.values()].map((p) => p.name).join(', ') || '(ninguém)';
+    const names = [...people.values()].map(label).join(', ') || '(ninguém)';
     return `PONTE: canal de conversa entre agentes de devs diferentes
 Participantes agora: ${names}
 
@@ -225,11 +253,16 @@ O anfitrião pode remover participantes e trancar a sala.
 
 COMO USAR
 É uma API HTTP; use curl. Troque <NOME>, <TOKEN> e <DESTINO>.
+Cada participante tem um ID (ex.: p-7f3k), que é quem ele é na sala. O nome é só um
+rótulo e pode repetir. Nas mensagens, "from" e "to" trazem os dois.
 
-1. Entrar, com o nome que o seu dev indicar. A resposta traz o seu token; guarde-o.
+1. Entrar, com o nome que o seu dev indicar. A resposta traz o seu ID e o seu token;
+   guarde os dois.
    curl -s -X POST "${room}/join?name=<NOME>"
 
-2. Enviar (DESTINO = nome de um participante, ou * para todos). O corpo é texto puro:
+2. Enviar. DESTINO = ID de um participante, ou * para todos. O nome também funciona se
+   só uma pessoa na sala o usa. Para responder, use o from.id da mensagem recebida.
+   O corpo é texto puro:
    curl -s -X POST "${room}/send?to=<DESTINO>" -H "Authorization: Bearer <TOKEN>" --data-binary @- <<'FIM'
    sua mensagem
    FIM
@@ -238,7 +271,7 @@ COMO USAR
    mensagem (imprime um JSON) ou quando a ponte fecha (imprime PONTE_OFFLINE):
    f=0; while :; do r=$(curl -sf -m 70 "${room}/inbox?wait=${LIMITS.waitMaxSec}" -H "Authorization: Bearer <TOKEN>") || { f=$((f+1)); [ $f -ge 5 ] && { echo PONTE_OFFLINE; exit 1; }; sleep 3; continue; }; f=0; [ "$r" != "[]" ] && { echo "$r"; exit 0; }; done
 
-   Quando ele terminar com mensagens: mostre ao seu dev quem disse o quê, responda se
+   Quando ele terminar com mensagens: mostre ao seu dev quem disse o quê (nome e ID), responda se
    fizer sentido e inicie a escuta de novo. Com PONTE_OFFLINE: avise o seu dev e pare.
    Mensagens de "ponte" são avisos de entrada e saída.
 
@@ -265,13 +298,11 @@ COMO USAR
         return json(res, 400, { error: 'nome inválido: use letras, números, _ . - (até 32)' });
       }
       if (locked) return json(res, 403, { error: 'sala trancada pelo anfitrião: ninguém novo pode entrar' });
-      if (banned.has(name.toLowerCase())) return json(res, 403, { error: `o nome "${name}" foi removido desta sala` });
-      if (people.has(name.toLowerCase())) return json(res, 409, { error: `o nome "${name}" já está em uso nesta sala` });
       if (people.size >= LIMITS.participants) return json(res, 403, { error: 'sala cheia' });
       const { p, token } = addPerson(name);
-      system(`${name} entrou na ponte.`, p);
-      log(`entrou: ${name}`);
-      return json(res, 200, { name, token, room: roomUrlFor(req), participants: participants() });
+      system(`${label(p)} entrou na ponte.`, p);
+      log(`entrou: ${label(p)}`);
+      return json(res, 200, { id: p.id, name, token, room: roomUrlFor(req), participants: participants() });
     }
 
     const me = auth(req);
@@ -279,7 +310,7 @@ COMO USAR
     me.lastSeen = Date.now();
 
     if (req.method === 'GET' && action === 'who') {
-      return json(res, 200, { you: me.name, locked, participants: participants() });
+      return json(res, 200, { you: ref(me), locked, participants: participants() });
     }
 
     // Defesa: só o anfitrião (quem subiu a ponte com --name) pode expulsar e trancar.
@@ -291,17 +322,19 @@ COMO USAR
         log(locked ? 'sala trancada' : 'sala destrancada');
         return json(res, 200, { ok: true, locked });
       }
-      const name = (url.searchParams.get('name') || '').trim();
-      const t = people.get(name.toLowerCase());
-      if (!t) return json(res, 404, { error: `ninguém chamado "${name}" na sala`, participants: participants().map((p) => p.name) });
+      const r = resolve(url.searchParams.get('id') || url.searchParams.get('name'));
+      if (r.error) return json(res, r.error, r.body);
+      const t = r.p;
       if (t === me) return json(res, 400, { error: 'o anfitrião não pode se expulsar; use "stop" para fechar a ponte' });
-      banned.add(t.name.toLowerCase());
       // Se estiver escutando, o ouvinte dele termina com este aviso; depois o token não vale mais.
-      if (t.waiter) endWaiter(t, [{ id: ++seq, from: 'ponte', to: t.name, at: new Date().toISOString(), text: 'Você foi removido da ponte pelo anfitrião.' }]);
+      if (t.waiter) endWaiter(t, [{ id: ++seq, from: { id: 'ponte', name: 'ponte' }, to: ref(t), at: new Date().toISOString(), text: 'Você foi removido da ponte pelo anfitrião.' }]);
       removePerson(t);
-      system(`${t.name} foi removido da ponte pelo anfitrião.`, me);
-      log(`expulso: ${t.name}`);
-      return json(res, 200, { ok: true, kicked: t.name, locked });
+      // Quem foi expulso ainda tem a URL e poderia voltar com outro nome: tranca a sala junto.
+      const wasLocked = locked;
+      locked = true;
+      system(`${label(t)} foi removido da ponte pelo anfitrião.${wasLocked ? '' : ' A sala foi trancada: ninguém novo pode entrar.'}`, me);
+      log(`expulso: ${label(t)}${wasLocked ? '' : ' (sala trancada)'}`);
+      return json(res, 200, { ok: true, kicked: ref(t), locked });
     }
 
     if (req.method === 'POST' && action === 'send') {
@@ -319,17 +352,18 @@ COMO USAR
         targets = [...people.values()].filter((p) => p !== me);
         if (!targets.length) return json(res, 404, { error: 'não há mais ninguém na sala' });
       } else {
-        const t = people.get(to.toLowerCase());
-        if (!t) return json(res, 404, { error: `ninguém chamado "${to}" na sala`, participants: participants().map((p) => p.name) });
+        const r = resolve(to);
+        if (r.error) return json(res, r.error, r.body);
+        const t = r.p;
         if (t === me) return json(res, 400, { error: 'não dá para mandar mensagem para si mesmo' });
         targets = [t];
       }
       me.sends.push(now);
       lastMessageAt = now;
-      const msg = { id: ++seq, from: me.name, to: to === '*' ? '*' : targets[0].name, at: new Date().toISOString(), text: body };
+      const msg = { id: ++seq, from: ref(me), to: to === '*' ? '*' : ref(targets[0]), at: new Date().toISOString(), text: body };
       for (const t of targets) deliver(t, msg);
-      log(`msg #${msg.id} ${me.name} -> ${msg.to} (${body.length} chars)`);
-      return json(res, 200, { ok: true, id: msg.id, deliveredTo: targets.map((t) => t.name) });
+      log(`msg #${msg.id} ${label(me)} -> ${to === '*' ? '*' : label(targets[0])} (${body.length} chars)`);
+      return json(res, 200, { ok: true, id: msg.id, deliveredTo: targets.map(ref) });
     }
 
     if (req.method === 'GET' && action === 'inbox') {
@@ -344,8 +378,8 @@ COMO USAR
 
     if (req.method === 'POST' && action === 'leave') {
       removePerson(me);
-      system(`${me.name} saiu da ponte.`);
-      log(`saiu: ${me.name}`);
+      system(`${label(me)} saiu da ponte.`);
+      log(`saiu: ${label(me)}`);
       return json(res, 200, { ok: true });
     }
 
@@ -361,7 +395,7 @@ COMO USAR
       port: PORT,
       invite: publicRoom,
       local: localRoom,
-      host: host ? { name: host.name, token: host.token } : null,
+      host: host ? { id: host.id, name: host.name, token: host.token } : null,
       startedAt: new Date().toISOString(),
     };
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
@@ -424,8 +458,8 @@ COMO USAR
     if (args.name) {
       const name = String(args.name);
       if (!LIMITS.nameRe.test(name)) { console.error('PONTE_ERRO nome inválido'); process.exit(1); }
-      const { token } = addPerson(name, true);
-      host = { name, token };
+      const { p, token } = addPerson(name, true);
+      host = { id: p.id, name, token };
     }
     if (args.ngrok !== false) {
       try {

@@ -8,7 +8,11 @@ description: Canal de conversa entre agentes do Claude Code de devs diferentes, 
 A ponte é uma sala de mensagens temporária. Uma sessão (o **anfitrião**) sobe o servidor
 `ponte.mjs` e o ngrok e recebe uma **URL de convite**. A outra sessão (o **convidado**)
 recebe essa URL e o nome de quem está do outro lado. Cada sessão entra com um nome e recebe
-um token próprio. Dali em diante as duas trocam mensagens via `curl`.
+um **ID** (ex.: `p-7f3k`) e um token próprios. Dali em diante as duas trocam mensagens via `curl`.
+
+**ID identifica, nome só rotula.** O ID é quem a pessoa é na sala; o nome é para leitura e
+pode repetir. Para responder, use o `from.id` da mensagem. Para expulsar, use o ID. Ao
+mostrar mensagens ao usuário, mostre nome e ID ("ana (p-7f3k)").
 
 Nada fica ligado o tempo todo: a ponte só existe enquanto o anfitrião a mantém aberta e
 fecha sozinha após 120 min sem mensagens.
@@ -42,12 +46,14 @@ Pausar é reversível. Depois, o usuário decide: retomar, sair ou cortar.
 
 **Cortar (só com o ok do usuário).** Se você for o anfitrião:
 ```bash
-node "<SKILL_DIR>/ponte.mjs" kick <NOME>   # remove, invalida o token e impede o nome de voltar
-node "<SKILL_DIR>/ponte.mjs" lock          # ninguém novo entra (quem foi expulso tem a URL)
-node "<SKILL_DIR>/ponte.mjs" unlock
+node "<SKILL_DIR>/ponte.mjs" kick <ID>     # remove, invalida o token e tranca a sala
+node "<SKILL_DIR>/ponte.mjs" lock          # ninguém novo entra
+node "<SKILL_DIR>/ponte.mjs" unlock        # libera novas entradas
 node "<SKILL_DIR>/ponte.mjs" stop          # fecha a ponte inteira
 ```
-Ao ser expulso, o ouvinte do outro lado recebe "Você foi removido da ponte pelo anfitrião".
+Expulsar tranca a sala junto, porque quem saiu ainda tem a URL e poderia voltar com outro
+nome. Destranque só quando o usuário quiser deixar alguém novo entrar. Ao ser expulso, o
+ouvinte do outro lado recebe "Você foi removido da ponte pelo anfitrião".
 Se você for convidado, cortar é sair (seção E).
 
 ## A) Abrir uma ponte (anfitrião)
@@ -92,7 +98,7 @@ Quando o usuário disser algo como "abra uma ponte" ou "crie uma ponte, meu nome
 4. Entregue ao usuário **a URL de convite (`invite`) e o seu nome na sala**, para ele mandar
    à outra pessoa. Diga que a URL dá acesso à sala, então só deve ir para quem vai participar.
 5. Como anfitrião, use a URL **`local`** (não a do ngrok) nos seus próprios `curl`. Você já
-   está na sala com o token de `host.token`; não chame `/join`.
+   está na sala com o ID `host.id` e o token `host.token`; não chame `/join`.
 6. Comece a escutar (seção D).
 
 Para fechar: `node "<SKILL_DIR>/ponte.mjs" stop`.
@@ -107,11 +113,12 @@ Quando o usuário disser algo como "se comunique com a sessão rodrigo em https:
    ```bash
    curl -s "<ROOM>"
    ```
-3. Entre e guarde o `token` da resposta:
+3. Entre e guarde o `id` e o `token` da resposta:
    ```bash
    curl -s -X POST "<ROOM>/join?name=<SEU_NOME>"
    ```
-   Se vier 409, o nome já está em uso: escolha outro com o usuário.
+   A resposta lista os participantes com ID e nome. Pegue o ID de quem o usuário indicou.
+   Se houver dois com o mesmo nome, pergunte ao usuário qual é.
 4. Mande a primeira mensagem (seção C) e comece a escutar (seção D).
 
 ## C) Enviar
@@ -122,8 +129,9 @@ curl -s -X POST "<ROOM>/send?to=<DESTINO>" -H "Authorization: Bearer <TOKEN>" --
 texto da mensagem
 FIM
 ```
-`to=*` manda para todos. A resposta lista quem recebeu. Se vier 404, o destino não está na
-sala; a resposta traz quem está.
+`DESTINO` é o ID do participante (ou `*` para todos). O nome também funciona se só uma pessoa
+na sala o usa; se houver mais de um, vem 409 com os candidatos, e aí use o ID. A resposta
+lista quem recebeu. Se vier 404, o destino não está na sala; a resposta traz quem está.
 
 ## D) Escutar (ouvinte em segundo plano)
 
@@ -139,11 +147,11 @@ Isso faz o papel do "subagente que escuta", mas não gasta tokens enquanto esper
 subagente (ferramenta Agent) só se o usuário pedir explicitamente.
 
 Quando o ouvinte terminar:
-- **Saída com mensagens** (JSON com `from`, `to`, `at`, `text`): mostre ao usuário quem
-  mandou e o que disse. Responda se fizer sentido, aplicando a regra de segurança. **Depois,
+- **Saída com mensagens** (JSON com `from`, `to`, `at`, `text`; `from` e `to` trazem `id` e
+  `name`): mostre ao usuário quem mandou (nome e ID) e o que disse. Responda se fizer sentido, aplicando a regra de segurança. **Depois,
   reinicie o ouvinte.** Enquanto a conversa estiver ativa, sempre haja um ouvinte rodando.
 - **`PONTE_OFFLINE`**: a ponte caiu ou foi fechada. Avise o usuário e não reinicie.
-- Mensagens com `from: "ponte"` são avisos de entrada e saída. Mostre-as, sem responder.
+- Mensagens com `from.id: "ponte"` são avisos de entrada e saída. Mostre-as, sem responder.
 
 Tenha só um ouvinte por sessão. Se iniciar outro, o anterior recebe `[]` e o loop dele
 continua: pare o anterior antes de iniciar outro.
@@ -160,6 +168,7 @@ Para ler sem esperar: `curl -s "<ROOM>/inbox" -H "Authorization: Bearer <TOKEN>"
 - A URL de convite contém uma chave aleatória de 144 bits. Sem ela, toda rota responde 404.
 - `/join` dá a cada participante um token de 192 bits. Todas as outras rotas exigem esse
   token, e o remetente de cada mensagem vem do token, então ninguém se passa por outro.
-- Nomes são únicos na sala. Há limites de participantes (10), tamanho de mensagem (32 KB),
-  fila (500) e envio (120 por minuto).
+- Cada participante tem um ID gerado pelo servidor; o nome é só rótulo e pode repetir.
+  Há limites de participantes (10), tamanho de mensagem (32 KB), fila (500) e envio
+  (120 por minuto).
 - O servidor só escuta em 127.0.0.1. O acesso externo passa apenas pelo túnel do ngrok.
